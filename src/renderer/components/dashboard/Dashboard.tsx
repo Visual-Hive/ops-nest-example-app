@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { AreaGrid } from './AreaGrid';
 import { ConflictPanel } from './ConflictPanel';
+import { EmailInbox } from '../email/EmailInbox';
 import type { Area, AppEvent, Escalation } from '../../../shared/models';
 
 interface DashboardProps {
@@ -189,13 +190,7 @@ export function Dashboard({ onNewEvent }: DashboardProps) {
         <div style={styles.rightPanel}>
           {/* Email Activity */}
           <div style={styles.rightSection}>
-            <div style={styles.panelHeader}>
-              <h2 style={styles.panelTitle}>Email Activity</h2>
-              <span style={styles.badge}>0</span>
-            </div>
-            <div style={styles.emptyStateSmall}>
-              <p>Vendor emails will appear here after Outlook sync (Phase 4).</p>
-            </div>
+            <EmailInbox onRefresh={loadData} />
           </div>
 
           {/* Conflicts & Escalations */}

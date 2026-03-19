@@ -4,8 +4,17 @@ import { importFromSheets, resolveColumnIndices, columnLetter } from './sheets-i
 import { importFromMonday } from './monday-import.service';
 import { readSheetRange, writeSheetRange } from './sheets.service';
 import { updateItemColumn } from './monday.service';
+import {
+  fetchRecentEmails,
+  isMicrosoftConfigured,
+} from './outlook.service';
+import {
+  classifyEmail,
+  runEscalationReview as aiEscalationReview,
+  isAnthropicConfigured,
+} from './claude.service';
 import { v4 as uuid } from 'uuid';
-import type { ColumnMapping } from '../../shared/models';
+import type { ColumnMapping, Equipment } from '../../shared/models';
 
 let syncInterval: ReturnType<typeof setInterval> | null = null;
 let isSyncing = false;
@@ -71,6 +80,9 @@ export async function runSyncCycle(): Promise<void> {
 
     // Step 5: Push local changes to external systems
     await pushChanges(event);
+
+    // Step 6: AI escalation review
+    await runPeriodicEscalationReview();
 
     lastSyncAt = new Date().toISOString();
     console.log(`Sync cycle complete at ${lastSyncAt}`);
@@ -166,7 +178,130 @@ async function pullFromMonday(event: EventConfig): Promise<void> {
 }
 
 async function pullFromOutlook(): Promise<void> {
-  // TODO: Phase 4
+  if (!isMicrosoftConfigured()) {
+    console.log('  [Outlook] Not configured, skipping');
+    return;
+  }
+
+  try {
+    const db = getDb();
+
+    // Only fetch emails since last sync
+    const sinceDate = lastSyncAt || undefined;
+    const emails = await fetchRecentEmails(sinceDate);
+
+    const insertEmail = db.prepare(
+      `INSERT OR IGNORE INTO emails (id, outlook_message_id, vendor_id, direction, subject, body_preview, body_full, is_read, sent_at)
+       VALUES (?, ?, ?, 'inbound', ?, ?, ?, ?, ?)`
+    );
+
+    const findVendorByEmail = db.prepare('SELECT id FROM vendors WHERE email = ?');
+    let newCount = 0;
+
+    for (const msg of emails) {
+      // Skip if already stored
+      const exists = db
+        .prepare('SELECT id FROM emails WHERE outlook_message_id = ?')
+        .get(msg.id);
+      if (exists) continue;
+
+      // Link to vendor by sender email
+      const vendor = findVendorByEmail.get(msg.from) as { id: string } | undefined;
+
+      const emailId = uuid();
+      insertEmail.run(
+        emailId,
+        msg.id,
+        vendor?.id || null,
+        msg.subject,
+        msg.bodyPreview,
+        msg.body,
+        msg.isRead ? 1 : 0,
+        msg.receivedAt
+      );
+      newCount++;
+
+      // Auto-classify with Claude
+      if (isAnthropicConfigured()) {
+        try {
+          const vendorName = vendor
+            ? (db.prepare('SELECT name FROM vendors WHERE id = ?').get(vendor.id) as any)?.name
+            : undefined;
+          const result = await classifyEmail(msg.subject, msg.bodyPreview, vendorName);
+          db.prepare(
+            'UPDATE emails SET ai_classification = ?, ai_summary = ? WHERE id = ?'
+          ).run(result.classification, result.summary, emailId);
+        } catch {
+          // Classification failed for this email
+        }
+      }
+    }
+
+    console.log(`  [Outlook] Fetched ${newCount} new emails`);
+  } catch (err) {
+    console.error('  [Outlook] Pull failed:', err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * Periodic AI escalation review - runs once per sync cycle.
+ * Reviews equipment status and recent emails to flag issues.
+ */
+async function runPeriodicEscalationReview(): Promise<void> {
+  if (!isAnthropicConfigured()) return;
+
+  try {
+    const db = getDb();
+
+    // Get all equipment
+    const equipmentRows = db.prepare('SELECT * FROM equipment').all() as any[];
+    if (equipmentRows.length === 0) return;
+
+    const equipment: Equipment[] = equipmentRows.map((e) => ({
+      id: e.id,
+      areaId: e.area_id,
+      name: e.name,
+      quantityNeeded: e.quantity_needed,
+      quantityConfirmed: e.quantity_confirmed,
+      vendorId: e.vendor_id,
+      status: e.status,
+      notes: e.notes,
+      createdAt: e.created_at,
+      updatedAt: e.updated_at,
+    }));
+
+    // Get recent emails with summaries
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const emailRows = db
+      .prepare(
+        `SELECT e.*, v.name as vendor_name FROM emails e
+         LEFT JOIN vendors v ON e.vendor_id = v.id
+         WHERE e.sent_at > ? AND e.ai_summary IS NOT NULL`
+      )
+      .all(oneDayAgo) as any[];
+
+    const recentEmails = emailRows.map((e) => ({
+      vendorName: e.vendor_name || 'Unknown',
+      summary: e.ai_summary,
+      sentAt: e.sent_at,
+    }));
+
+    const issues = await aiEscalationReview(equipment, recentEmails);
+
+    if (issues.length > 0) {
+      const insertEsc = db.prepare(
+        `INSERT INTO escalations (id, type, description, ai_recommendation, status)
+         VALUES (?, ?, ?, ?, 'open')`
+      );
+
+      for (const issue of issues) {
+        insertEsc.run(uuid(), issue.type, issue.description, issue.recommendation);
+      }
+      console.log(`  [AI] Created ${issues.length} escalations`);
+    }
+  } catch (err) {
+    console.error('  [AI] Escalation review failed:', err instanceof Error ? err.message : err);
+  }
 }
 
 /**
