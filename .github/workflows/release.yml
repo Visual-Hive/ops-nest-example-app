@@ -100,3 +100,12 @@ jobs:
         with:
           files: artifacts/*
           generate_release_notes: true
+          append_body: true
+          body: |
+            ## Installation Notes
+
+            **macOS:** The app is not code-signed. After mounting the DMG and copying the app, run in Terminal:
+            ```
+            xattr -cr /Applications/OpsNest\ Conference\ Sync.app
+            ```
+            Then open the app normally.

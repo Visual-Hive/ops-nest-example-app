@@ -1,5 +1,3 @@
-import Store from 'electron-store';
-
 export interface StoreSchema {
   // API Keys
   anthropicApiKey?: string;
@@ -27,7 +25,8 @@ export interface StoreSchema {
 // Use any-typed store to avoid complex generics issues with electron-store + CommonJS
 let store: any;
 
-export function initStore(): void {
+export async function initStore(): Promise<void> {
+  const { default: Store } = await import('electron-store');
   store = new Store({
     name: 'opsnest-config',
     encryptionKey: 'opsnest-conference-sync-v1',

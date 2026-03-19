@@ -43,7 +43,7 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   // Initialize storage and database
-  initStore();
+  await initStore();
   initDatabase();
 
   // Start the internal Express server (for OAuth callbacks)
