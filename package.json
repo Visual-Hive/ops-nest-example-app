@@ -49,6 +49,13 @@
       "node_modules/**/*",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "credentials.json",
+        "to": "credentials.json",
+        "filter": ["**/*"]
+      }
+    ],
     "mac": {
       "category": "public.app-category.business",
       "target": "dmg"

@@ -86,6 +86,28 @@ src/
     └── models.ts             # Shared TypeScript interfaces
 ```
 
+## Releases
+
+Releases are built automatically via GitHub Actions on all 3 platforms.
+
+**To create a release:**
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+This triggers the workflow to build `.exe` (Windows), `.dmg` (macOS), and `.AppImage` (Linux) installers, then uploads them to a GitHub Release.
+
+You can also trigger a build manually from the Actions tab (workflow_dispatch) for testing without creating a release.
+
+### Required GitHub Secrets
+
+| Secret | Description |
+|--------|-------------|
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | Full JSON content of your Google Service Account key file. Written to `credentials.json` and bundled into the app via `extraResources`. |
+| `MICROSOFT_CLIENT_ID` | Azure AD application (client) ID for Outlook OAuth PKCE flow. |
+
 ## Tech Stack
 
 - Electron (desktop shell)
