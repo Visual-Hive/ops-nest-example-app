@@ -26,7 +26,8 @@ export interface StoreSchema {
 let store: any;
 
 export async function initStore(): Promise<void> {
-  const { default: Store } = await import('electron-store');
+  const importDynamic = new Function('modulePath', 'return import(modulePath)');
+  const { default: Store } = await importDynamic('electron-store');
   store = new Store({
     name: 'opsnest-config',
     encryptionKey: 'opsnest-conference-sync-v1',
