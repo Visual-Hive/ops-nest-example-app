@@ -1,18 +1,27 @@
 import { google, sheets_v4 } from 'googleapis';
+import { app } from 'electron';
+import fs from 'fs';
+import path from 'path';
 import { getStore } from '../store';
 
-// Service Account credentials will be bundled with the app
-// For development, we read from an environment variable or bundled file
 let sheetsClient: sheets_v4.Sheets | null = null;
 
 function getServiceAccountCredentials(): object | null {
-  // In production, these would be bundled in the app resources
-  // For development, use GOOGLE_SERVICE_ACCOUNT_JSON env var
+  // Dev: read from environment variable
   const json = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
   if (json) {
     return JSON.parse(json);
   }
-  // TODO: Load from bundled resources in production
+
+  // Production: load from bundled credentials.json
+  const bundledPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'credentials.json')
+    : path.join(app.getAppPath(), 'credentials.json');
+
+  if (fs.existsSync(bundledPath)) {
+    return JSON.parse(fs.readFileSync(bundledPath, 'utf-8'));
+  }
+
   return null;
 }
 

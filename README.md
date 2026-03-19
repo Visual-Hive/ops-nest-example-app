@@ -29,13 +29,70 @@ npm install
 npm run dev
 ```
 
+### Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | Dev only | Full JSON string of Google Service Account credentials. In production, place `credentials.json` in the app resources directory instead. |
+| `MICROSOFT_CLIENT_ID` | Yes | Azure AD app registration client ID for Outlook OAuth (PKCE flow). |
+
+**Note:** Anthropic API key and Monday.com API token are entered by the user through the onboarding wizard and stored locally via electron-store. They are not environment variables.
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────┐
+│  Electron Main Process                          │
+│  ├── Express server (OAuth callbacks :19876)    │
+│  ├── IPC handlers (auth, sync, email, ai, data) │
+│  ├── Services                                   │
+│  │   ├── sheets.service    (Google Sheets API)  │
+│  │   ├── monday.service    (GraphQL API)        │
+│  │   ├── outlook.service   (Microsoft Graph)    │
+│  │   ├── claude.service    (Anthropic API)      │
+│  │   └── sync-engine       (poll-and-reconcile) │
+│  ├── SQLite (8 tables + sync journal)           │
+│  └── electron-store (encrypted credentials)     │
+├─────────────────────────────────────────────────┤
+│  Preload (contextBridge)                        │
+├─────────────────────────────────────────────────┤
+│  React 19 Renderer (Vite)                       │
+│  ├── Onboarding wizard                          │
+│  ├── Dashboard (areas, equipment, sync status)  │
+│  ├── Email inbox + AI draft composer            │
+│  └── Conflict resolution panel                  │
+└─────────────────────────────────────────────────┘
+```
+
+## Project Structure
+
+```
+src/
+├── main/
+│   ├── index.ts              # App entry, BrowserWindow
+│   ├── server.ts             # Express (OAuth callbacks)
+│   ├── store.ts              # electron-store config
+│   ├── db/                   # SQLite schema + init
+│   ├── ipc/                  # IPC handlers (auth, sync, email, ai, data, events)
+│   └── services/             # API integrations + sync engine
+├── renderer/
+│   ├── App.tsx               # Screen router
+│   ├── components/           # onboarding/, dashboard/, email/, shared/
+│   ├── stores/               # Zustand state
+│   └── hooks/                # IPC wrapper
+├── preload/index.ts          # contextBridge API
+└── shared/
+    ├── ipc-channels.ts       # IPC channel constants
+    └── models.ts             # Shared TypeScript interfaces
+```
+
 ## Tech Stack
 
 - Electron (desktop shell)
 - React 19 + TypeScript (UI)
 - Vite (bundling)
-- SQLite (local data store)
+- SQLite via better-sqlite3 (local data store)
 - Google Sheets API (via Service Account)
-- Microsoft Graph API (Outlook)
+- Microsoft Graph API (Outlook, PKCE OAuth)
 - Monday.com GraphQL API
 - Anthropic Claude API (AI features)
