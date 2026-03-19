@@ -1,4 +1,5 @@
 import { Client } from '@microsoft/microsoft-graph-client';
+import crypto from 'crypto';
 import { getStore } from '../store';
 import { getCallbackUrl } from '../server';
 
@@ -9,17 +10,31 @@ const MICROSOFT_TENANT = 'common'; // Multi-tenant
 const MICROSOFT_SCOPES = ['Mail.Read', 'Mail.Send', 'User.Read', 'offline_access'];
 
 let graphClient: Client | null = null;
+let codeVerifier: string = '';
+
+function generateCodeVerifier(): string {
+  return crypto.randomBytes(32).toString('base64url');
+}
+
+function generateCodeChallenge(verifier: string): string {
+  return crypto.createHash('sha256').update(verifier).digest('base64url');
+}
 
 export function getMicrosoftAuthUrl(): string {
   const redirectUri = getCallbackUrl('microsoft');
+
+  // PKCE: generate code_verifier and code_challenge
+  codeVerifier = generateCodeVerifier();
+  const codeChallenge = generateCodeChallenge(codeVerifier);
+
   const params = new URLSearchParams({
     client_id: MICROSOFT_CLIENT_ID,
     response_type: 'code',
     redirect_uri: redirectUri,
     scope: MICROSOFT_SCOPES.join(' '),
     response_mode: 'query',
-    // PKCE flow - no client secret needed
     code_challenge_method: 'S256',
+    code_challenge: codeChallenge,
   });
 
   return `https://login.microsoftonline.com/${MICROSOFT_TENANT}/oauth2/v2.0/authorize?${params}`;
@@ -39,6 +54,7 @@ export async function handleMicrosoftCallback(code: string): Promise<void> {
         code,
         redirect_uri: redirectUri,
         scope: MICROSOFT_SCOPES.join(' '),
+        code_verifier: codeVerifier,
       }),
     }
   );

@@ -19,7 +19,11 @@ function getServiceAccountCredentials(): object | null {
     : path.join(app.getAppPath(), 'credentials.json');
 
   if (fs.existsSync(bundledPath)) {
-    return JSON.parse(fs.readFileSync(bundledPath, 'utf-8'));
+    try {
+      return JSON.parse(fs.readFileSync(bundledPath, 'utf-8'));
+    } catch {
+      return null;
+    }
   }
 
   return null;
