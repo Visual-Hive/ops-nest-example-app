@@ -43,6 +43,14 @@ export const IPC = {
   EVENTS_CREATE: 'events:create',
   EVENTS_SELECT: 'events:select',
   EVENTS_GET_ACTIVE: 'events:get-active',
+  EVENTS_UPDATE: 'events:update',
+
+  // Sheets helpers
+  SHEETS_GET_HEADERS: 'sheets:get-headers',
+  SHEETS_IMPORT: 'sheets:import',
+
+  // Monday helpers
+  MONDAY_IMPORT: 'monday:import',
 } as const;
 
 export type IPCChannel = (typeof IPC)[keyof typeof IPC];

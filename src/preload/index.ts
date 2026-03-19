@@ -52,11 +52,23 @@ const api = {
 
   // Events
   listEvents: () => ipcRenderer.invoke(IPC.EVENTS_LIST),
-  createEvent: (name: string, date: string) =>
-    ipcRenderer.invoke(IPC.EVENTS_CREATE, name, date),
+  createEvent: (name: string, date: string, config?: Record<string, unknown>) =>
+    ipcRenderer.invoke(IPC.EVENTS_CREATE, name, date, config),
   selectEvent: (eventId: string) =>
     ipcRenderer.invoke(IPC.EVENTS_SELECT, eventId),
   getActiveEvent: () => ipcRenderer.invoke(IPC.EVENTS_GET_ACTIVE),
+  updateEvent: (eventId: string, updates: Record<string, unknown>) =>
+    ipcRenderer.invoke(IPC.EVENTS_UPDATE, eventId, updates),
+
+  // Sheets helpers
+  getSheetHeaders: (spreadsheetId: string, sheetName: string) =>
+    ipcRenderer.invoke(IPC.SHEETS_GET_HEADERS, spreadsheetId, sheetName),
+  importFromSheets: (eventId: string) =>
+    ipcRenderer.invoke(IPC.SHEETS_IMPORT, eventId),
+
+  // Monday helpers
+  importFromMonday: (eventId: string) =>
+    ipcRenderer.invoke(IPC.MONDAY_IMPORT, eventId),
 };
 
 contextBridge.exposeInMainWorld('opsnest', api);

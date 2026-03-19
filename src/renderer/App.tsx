@@ -1,33 +1,72 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useAuthStore } from './stores/auth.store';
 import { OnboardingWizard } from './components/onboarding/OnboardingWizard';
+import { EventSetup } from './components/onboarding/EventSetup';
 import { Dashboard } from './components/dashboard/Dashboard';
+
+type AppScreen = 'loading' | 'onboarding' | 'event-setup' | 'dashboard';
 
 export default function App() {
   const { status, loading, setStatus, setLoading } = useAuthStore();
+  const [screen, setScreen] = useState<AppScreen>('loading');
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    async function checkAuth() {
+    async function init() {
       try {
-        if (window.opsnest) {
-          const authStatus = await window.opsnest.getAuthStatus();
-          setStatus(authStatus);
+        if (!window.opsnest) {
+          setScreen('dashboard'); // Dev mode without Electron
+          setLoading(false);
+          return;
+        }
+
+        const authStatus = await window.opsnest.getAuthStatus();
+        setStatus(authStatus);
+
+        if (!authStatus.onboardingComplete) {
+          setScreen('onboarding');
+        } else {
+          // Check if there's an active event
+          const { event } = await window.opsnest.getActiveEvent();
+          if (event) {
+            setScreen('dashboard');
+          } else {
+            setScreen('event-setup');
+          }
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to check auth status');
+        setError(err instanceof Error ? err.message : 'Failed to initialize');
       } finally {
         setLoading(false);
       }
     }
-    checkAuth();
+    init();
   }, [setStatus, setLoading]);
 
-  if (loading) {
+  const handleOnboardingComplete = useCallback(async () => {
+    // Check if we already have an event
+    if (window.opsnest) {
+      const { event } = await window.opsnest.getActiveEvent();
+      if (event) {
+        setScreen('dashboard');
+      } else {
+        setScreen('event-setup');
+      }
+    }
+  }, []);
+
+  const handleEventSetupComplete = useCallback(() => {
+    setScreen('dashboard');
+  }, []);
+
+  const handleNewEvent = useCallback(() => {
+    setScreen('event-setup');
+  }, []);
+
+  if (loading || screen === 'loading') {
     return (
       <div style={styles.loadingContainer}>
-        <div style={styles.spinner} />
-        <p style={styles.loadingText}>Starting OpsNest...</p>
+        <div style={styles.loadingText}>Starting OpsNest...</div>
       </div>
     );
   }
@@ -41,11 +80,16 @@ export default function App() {
     );
   }
 
-  if (!status.onboardingComplete) {
-    return <OnboardingWizard />;
+  switch (screen) {
+    case 'onboarding':
+      return <OnboardingWizard onComplete={handleOnboardingComplete} />;
+    case 'event-setup':
+      return <EventSetup onComplete={handleEventSetupComplete} />;
+    case 'dashboard':
+      return <Dashboard onNewEvent={handleNewEvent} />;
+    default:
+      return null;
   }
-
-  return <Dashboard />;
 }
 
 const styles: Record<string, React.CSSProperties> = {
@@ -56,14 +100,6 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     height: '100vh',
     gap: '16px',
-  },
-  spinner: {
-    width: '40px',
-    height: '40px',
-    border: '4px solid #e2e8f0',
-    borderTopColor: '#6366f1',
-    borderRadius: '50%',
-    animation: 'spin 1s linear infinite',
   },
   loadingText: {
     color: '#64748b',

@@ -5,6 +5,8 @@ import { registerAuthHandlers } from './ipc/auth.ipc';
 import { registerSyncHandlers } from './ipc/sync.ipc';
 import { registerEmailHandlers } from './ipc/email.ipc';
 import { registerAiHandlers } from './ipc/ai.ipc';
+import { registerDataHandlers } from './ipc/data.ipc';
+import { registerEventsHandlers } from './ipc/events.ipc';
 import { initDatabase } from './db';
 import { initStore } from './store';
 
@@ -52,6 +54,8 @@ app.whenReady().then(async () => {
   registerSyncHandlers(ipcMain);
   registerEmailHandlers(ipcMain);
   registerAiHandlers(ipcMain);
+  registerDataHandlers(ipcMain);
+  registerEventsHandlers(ipcMain);
 
   createWindow();
 

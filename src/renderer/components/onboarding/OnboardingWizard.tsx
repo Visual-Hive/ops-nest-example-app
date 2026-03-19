@@ -11,7 +11,11 @@ const STEPS = [
   { id: 'microsoft', title: 'Microsoft 365', description: 'Email integration' },
 ];
 
-export function OnboardingWizard() {
+interface OnboardingWizardProps {
+  onComplete?: () => void;
+}
+
+export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
   const [currentStep, setCurrentStep] = useState(0);
   const { setStatus } = useAuthStore();
 
@@ -33,6 +37,7 @@ export function OnboardingWizard() {
       const status = await window.opsnest.getAuthStatus();
       setStatus({ ...status, onboardingComplete: true });
     }
+    onComplete?.();
   };
 
   const isLast = currentStep === STEPS.length - 1;

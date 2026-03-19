@@ -1,47 +1,88 @@
-import React, { useEffect, useState } from 'react';
-import type { SyncStatus as SyncStatusType } from '../../../shared/models';
+import React, { useEffect, useState, useCallback } from 'react';
+import { AreaGrid } from './AreaGrid';
+import type { Area, AppEvent, Escalation } from '../../../shared/models';
 
-export function Dashboard() {
-  const [syncStatus, setSyncStatus] = useState<SyncStatusType | null>(null);
+interface DashboardProps {
+  onNewEvent?: () => void;
+}
 
-  useEffect(() => {
-    async function init() {
-      if (!window.opsnest) return;
-      // Start sync engine
-      await window.opsnest.startSync();
-      const status = await window.opsnest.getSyncStatus();
+export function Dashboard({ onNewEvent }: DashboardProps) {
+  const [activeEvent, setActiveEvent] = useState<AppEvent | null>(null);
+  const [events, setEvents] = useState<AppEvent[]>([]);
+  const [areas, setAreas] = useState<Area[]>([]);
+  const [escalations, setEscalations] = useState<Escalation[]>([]);
+  const [syncStatus, setSyncStatus] = useState<{
+    isRunning: boolean;
+    lastSyncAt: string | null;
+    error: string | null;
+  }>({ isRunning: false, lastSyncAt: null, error: null });
+  const [syncing, setSyncing] = useState(false);
+
+  const loadData = useCallback(async () => {
+    if (!window.opsnest) return;
+
+    const [eventResult, eventsResult] = await Promise.all([
+      window.opsnest.getActiveEvent(),
+      window.opsnest.listEvents(),
+    ]);
+
+    setActiveEvent(eventResult.event);
+    setEvents(eventsResult.events || []);
+
+    if (eventResult.event) {
+      const [areasResult, escalationsResult, status] = await Promise.all([
+        window.opsnest.getAreas(),
+        window.opsnest.getEscalations(),
+        window.opsnest.getSyncStatus(),
+      ]);
+      // Filter areas for active event
+      const eventAreas = (areasResult.areas || []).filter(
+        (a: Area) => a.eventId === eventResult.event.id
+      );
+      setAreas(eventAreas);
+      setEscalations(escalationsResult.escalations || []);
       setSyncStatus({
         isRunning: status.isRunning,
         lastSyncAt: status.lastSyncAt,
         error: status.error,
-        sheetsConnected: false,
-        mondayConnected: false,
-        outlookConnected: false,
       });
     }
-    init();
-
-    // Poll sync status
-    const interval = setInterval(async () => {
-      if (!window.opsnest) return;
-      const status = await window.opsnest.getSyncStatus();
-      setSyncStatus({
-        isRunning: status.isRunning,
-        lastSyncAt: status.lastSyncAt,
-        error: status.error,
-        sheetsConnected: false,
-        mondayConnected: false,
-        outlookConnected: false,
-      });
-    }, 5000);
-
-    return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    loadData();
+
+    // Start sync engine
+    if (window.opsnest) {
+      window.opsnest.startSync();
+    }
+
+    // Poll for updates
+    const interval = setInterval(loadData, 10000);
+    return () => clearInterval(interval);
+  }, [loadData]);
 
   const handleSyncNow = async () => {
     if (!window.opsnest) return;
-    await window.opsnest.syncNow();
+    setSyncing(true);
+    try {
+      await window.opsnest.syncNow();
+      await loadData();
+    } finally {
+      setSyncing(false);
+    }
   };
+
+  const handleSelectEvent = async (eventId: string) => {
+    if (!window.opsnest) return;
+    await window.opsnest.selectEvent(eventId);
+    await loadData();
+  };
+
+  // Stats
+  const totalEquipmentAreas = areas.length;
+  const completedAreas = areas.filter((a) => a.status === 'complete').length;
+  const openEscalations = escalations.filter((e) => e.status === 'open').length;
 
   return (
     <div style={styles.container}>
@@ -49,9 +90,23 @@ export function Dashboard() {
       <header style={styles.topBar}>
         <div style={styles.topBarLeft}>
           <h1 style={styles.logo}>OpsNest</h1>
-          {/* Event tabs - placeholder for multi-event support */}
           <div style={styles.eventTabs}>
-            <button style={styles.eventTabActive}>Trade Show 2026</button>
+            {events.map((ev) => (
+              <button
+                key={ev.id}
+                style={
+                  ev.id === activeEvent?.id
+                    ? styles.eventTabActive
+                    : styles.eventTab
+                }
+                onClick={() => handleSelectEvent(ev.id)}
+              >
+                {ev.name}
+              </button>
+            ))}
+            <button style={styles.newEventBtn} onClick={onNewEvent}>
+              + New Event
+            </button>
           </div>
         </div>
         <div style={styles.topBarRight}>
@@ -59,21 +114,64 @@ export function Dashboard() {
             <div
               style={{
                 ...styles.syncDot,
-                background: syncStatus?.isRunning ? '#22c55e' : '#ef4444',
+                background: syncStatus.error
+                  ? '#ef4444'
+                  : syncStatus.isRunning
+                  ? '#22c55e'
+                  : '#94a3b8',
               }}
             />
             <span style={styles.syncText}>
-              {syncStatus?.lastSyncAt
-                ? `Last sync: ${new Date(syncStatus.lastSyncAt).toLocaleTimeString()}`
-                : 'Not synced yet'}
+              {syncing
+                ? 'Syncing...'
+                : syncStatus.lastSyncAt
+                ? `Synced ${new Date(syncStatus.lastSyncAt).toLocaleTimeString()}`
+                : 'Not synced'}
             </span>
           </div>
-          <button style={styles.syncBtn} onClick={handleSyncNow}>
-            Sync Now
+          <button
+            style={{ ...styles.syncBtn, ...(syncing ? { opacity: 0.6 } : {}) }}
+            onClick={handleSyncNow}
+            disabled={syncing}
+          >
+            {syncing ? 'Syncing...' : 'Sync Now'}
           </button>
-          <button style={styles.settingsBtn}>⚙️</button>
         </div>
       </header>
+
+      {/* Stats Bar */}
+      {activeEvent && areas.length > 0 && (
+        <div style={styles.statsBar}>
+          <div style={styles.stat}>
+            <span style={styles.statValue}>{totalEquipmentAreas}</span>
+            <span style={styles.statLabel}>Areas</span>
+          </div>
+          <div style={styles.stat}>
+            <span style={styles.statValue}>{completedAreas}</span>
+            <span style={styles.statLabel}>Complete</span>
+          </div>
+          <div style={styles.stat}>
+            <span style={{ ...styles.statValue, color: openEscalations > 0 ? '#ef4444' : '#22c55e' }}>
+              {openEscalations}
+            </span>
+            <span style={styles.statLabel}>Escalations</span>
+          </div>
+          <div style={styles.stat}>
+            <span style={styles.statValue}>
+              {activeEvent.date
+                ? Math.max(
+                    0,
+                    Math.ceil(
+                      (new Date(activeEvent.date).getTime() - Date.now()) /
+                        (1000 * 60 * 60 * 24)
+                    )
+                  )
+                : '—'}
+            </span>
+            <span style={styles.statLabel}>Days Until Event</span>
+          </div>
+        </div>
+      )}
 
       {/* Main Content */}
       <div style={styles.main}>
@@ -81,15 +179,9 @@ export function Dashboard() {
         <div style={styles.leftPanel}>
           <div style={styles.panelHeader}>
             <h2 style={styles.panelTitle}>Areas & Equipment</h2>
+            <span style={styles.badge}>{areas.length}</span>
           </div>
-          <div style={styles.emptyState}>
-            <div style={styles.emptyIcon}>📋</div>
-            <h3>No areas synced yet</h3>
-            <p>Connect your Google Sheet and Monday.com board to see your event areas here.</p>
-            <p style={styles.emptyHint}>
-              The sync engine will automatically pull data from your connected services.
-            </p>
-          </div>
+          <AreaGrid areas={areas} onRefresh={loadData} />
         </div>
 
         {/* Right Panel */}
@@ -101,7 +193,7 @@ export function Dashboard() {
               <span style={styles.badge}>0</span>
             </div>
             <div style={styles.emptyStateSmall}>
-              <p>Connect Microsoft 365 to see vendor emails here.</p>
+              <p>Vendor emails will appear here after Outlook sync (Phase 4).</p>
             </div>
           </div>
 
@@ -109,11 +201,38 @@ export function Dashboard() {
           <div style={styles.rightSection}>
             <div style={styles.panelHeader}>
               <h2 style={styles.panelTitle}>Escalations & Alerts</h2>
-              <span style={styles.badge}>0</span>
+              <span
+                style={{
+                  ...styles.badge,
+                  ...(openEscalations > 0
+                    ? { background: '#fef2f2', color: '#ef4444' }
+                    : {}),
+                }}
+              >
+                {openEscalations}
+              </span>
             </div>
-            <div style={styles.emptyStateSmall}>
-              <p>AI-flagged items needing your attention will appear here.</p>
-            </div>
+            {escalations.length === 0 ? (
+              <div style={styles.emptyStateSmall}>
+                <p>No escalations. Everything looks good!</p>
+              </div>
+            ) : (
+              <div style={styles.escalationList}>
+                {escalations.map((esc) => (
+                  <div key={esc.id} style={styles.escalationCard}>
+                    <div style={styles.escalationType}>
+                      {esc.type.replace(/_/g, ' ').toUpperCase()}
+                    </div>
+                    <div style={styles.escalationDesc}>{esc.description}</div>
+                    {esc.aiRecommendation && (
+                      <div style={styles.escalationRec}>
+                        AI recommends: {esc.aiRecommendation}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -132,7 +251,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: '12px 24px',
+    padding: '10px 24px',
     background: 'white',
     borderBottom: '1px solid #e2e8f0',
     boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
@@ -140,7 +259,7 @@ const styles: Record<string, React.CSSProperties> = {
   topBarLeft: {
     display: 'flex',
     alignItems: 'center',
-    gap: '24px',
+    gap: '20px',
   },
   logo: {
     fontSize: '18px',
@@ -150,15 +269,34 @@ const styles: Record<string, React.CSSProperties> = {
   eventTabs: {
     display: 'flex',
     gap: '4px',
+    alignItems: 'center',
+  },
+  eventTab: {
+    padding: '6px 14px',
+    borderRadius: '6px',
+    border: '1px solid #e2e8f0',
+    background: 'white',
+    color: '#64748b',
+    fontSize: '13px',
+    cursor: 'pointer',
   },
   eventTabActive: {
-    padding: '6px 16px',
+    padding: '6px 14px',
     borderRadius: '6px',
     border: 'none',
     background: '#eef2ff',
     color: '#6366f1',
     fontWeight: 600,
     fontSize: '13px',
+    cursor: 'pointer',
+  },
+  newEventBtn: {
+    padding: '6px 12px',
+    borderRadius: '6px',
+    border: '1px dashed #cbd5e1',
+    background: 'transparent',
+    color: '#94a3b8',
+    fontSize: '12px',
     cursor: 'pointer',
   },
   topBarRight: {
@@ -190,13 +328,27 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     color: '#374151',
   },
-  settingsBtn: {
-    padding: '6px 10px',
-    borderRadius: '6px',
-    border: '1px solid #e2e8f0',
+  statsBar: {
+    display: 'flex',
+    gap: '24px',
+    padding: '12px 24px',
     background: 'white',
-    cursor: 'pointer',
-    fontSize: '16px',
+    borderBottom: '1px solid #f1f5f9',
+  },
+  stat: {
+    display: 'flex',
+    alignItems: 'baseline',
+    gap: '6px',
+  },
+  statValue: {
+    fontSize: '20px',
+    fontWeight: 700,
+    color: '#1e293b',
+  },
+  statLabel: {
+    fontSize: '12px',
+    color: '#94a3b8',
+    fontWeight: 500,
   },
   main: {
     flex: 1,
@@ -229,8 +381,12 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: '16px 20px',
+    padding: '14px 20px',
     borderBottom: '1px solid #f1f5f9',
+    position: 'sticky',
+    top: 0,
+    background: 'white',
+    zIndex: 1,
   },
   panelTitle: {
     fontSize: '15px',
@@ -245,25 +401,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: '12px',
     fontWeight: 600,
   },
-  emptyState: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: '60px 40px',
-    textAlign: 'center',
-    color: '#64748b',
-    gap: '8px',
-  },
-  emptyIcon: {
-    fontSize: '40px',
-    marginBottom: '8px',
-  },
-  emptyHint: {
-    fontSize: '13px',
-    color: '#94a3b8',
-    marginTop: '8px',
-  },
   emptyStateSmall: {
     display: 'flex',
     alignItems: 'center',
@@ -272,5 +409,33 @@ const styles: Record<string, React.CSSProperties> = {
     textAlign: 'center',
     color: '#94a3b8',
     fontSize: '13px',
+  },
+  escalationList: {
+    padding: '8px',
+  },
+  escalationCard: {
+    padding: '12px 14px',
+    borderRadius: '8px',
+    border: '1px solid #fecaca',
+    background: '#fef2f2',
+    marginBottom: '8px',
+  },
+  escalationType: {
+    fontSize: '10px',
+    fontWeight: 700,
+    color: '#ef4444',
+    letterSpacing: '0.05em',
+    marginBottom: '4px',
+  },
+  escalationDesc: {
+    fontSize: '13px',
+    color: '#374151',
+    lineHeight: 1.4,
+  },
+  escalationRec: {
+    marginTop: '6px',
+    fontSize: '12px',
+    color: '#6366f1',
+    fontStyle: 'italic',
   },
 };
