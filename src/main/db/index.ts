@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { app } from 'electron';
 import path from 'path';
-import { CREATE_TABLES_SQL } from './schema';
+import { CREATE_TABLES_SQL, MIGRATIONS } from './schema';
 
 let db: Database.Database;
 
@@ -15,6 +15,15 @@ export function initDatabase(): void {
 
   // Create tables
   db.exec(CREATE_TABLES_SQL);
+
+  // Run idempotent migrations (for existing databases)
+  for (const migration of MIGRATIONS) {
+    try {
+      db.exec(migration);
+    } catch {
+      // Column already exists - expected on subsequent runs
+    }
+  }
 
   console.log(`Database initialized at: ${dbPath}`);
 }

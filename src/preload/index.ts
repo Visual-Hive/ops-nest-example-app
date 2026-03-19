@@ -32,6 +32,9 @@ const api = {
   getEscalations: () => ipcRenderer.invoke(IPC.DATA_GET_ESCALATIONS),
   resolveEscalation: (id: string, resolution: string) =>
     ipcRenderer.invoke(IPC.DATA_RESOLVE_ESCALATION, id, resolution),
+  getConflicts: () => ipcRenderer.invoke(IPC.DATA_GET_CONFLICTS),
+  resolveConflict: (escalationId: string, chosenSource: string) =>
+    ipcRenderer.invoke(IPC.DATA_RESOLVE_CONFLICT, escalationId, chosenSource),
 
   // Email
   getInbox: () => ipcRenderer.invoke(IPC.EMAIL_GET_INBOX),

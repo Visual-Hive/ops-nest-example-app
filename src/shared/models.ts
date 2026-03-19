@@ -118,6 +118,16 @@ export interface AuthStatus {
   onboardingComplete: boolean;
 }
 
+export interface SyncConflict {
+  id: string; // escalation ID
+  entityType: string;
+  entityId: string;
+  fieldName: string;
+  equipmentName?: string;
+  sourceA: { source: string; value: string; timestamp: string };
+  sourceB: { source: string; value: string; timestamp: string };
+}
+
 export interface ColumnMapping {
   areaName: string;
   equipmentName: string;

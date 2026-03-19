@@ -4,7 +4,8 @@ import { v4 as uuid } from 'uuid';
 
 /**
  * Import data from a Monday.com board into the local SQLite database.
- * Monday board structure: Groups = Areas, Items = Equipment, Subitems = sub-equipment
+ * Monday board structure: Groups = Areas, Items = Equipment, Subitems = sub-equipment.
+ * Tracks field-level diffs in sync_journal and stores column ID mapping for push.
  */
 export async function importFromMonday(
   eventId: string,
@@ -17,7 +18,6 @@ export async function importFromMonday(
 
   const db = getDb();
 
-  // Track groups as areas
   const groupMap = new Map<string, string>(); // group.id -> area.id
   let areasImported = 0;
   let equipmentImported = 0;
@@ -58,6 +58,19 @@ export async function importFromMonday(
     `INSERT INTO vendors (id, name) VALUES (?, ?) ON CONFLICT(id) DO NOTHING`
   );
 
+  const getExisting = db.prepare('SELECT * FROM equipment WHERE id = ?');
+  const getExistingByMonday = db.prepare(
+    'SELECT * FROM equipment WHERE monday_subitem_id = ?'
+  );
+
+  const logMonday = db.prepare(
+    `INSERT INTO sync_journal (entity_type, entity_id, source, field_name, old_value, new_value)
+     VALUES ('equipment', ?, 'monday', ?, ?, ?)`
+  );
+
+  // Derive column ID mapping from the first item's columns for push support
+  let columnMapStored = false;
+
   const transaction = db.transaction(() => {
     for (const item of items) {
       const group = item.group;
@@ -70,17 +83,19 @@ export async function importFromMonday(
         const areaId = existing?.id || uuid();
         groupMap.set(group.id, areaId);
 
-        insertArea.run(
-          areaId,
-          eventId,
-          group.title,
-          group.id,
-          'pending'
-        );
+        insertArea.run(areaId, eventId, group.title, group.id, 'pending');
         if (!existing) areasImported++;
       }
 
       const areaId = groupMap.get(group.id)!;
+
+      // Store column ID mapping from first item
+      if (!columnMapStored && item.columnValues.length > 0) {
+        const columnMap = deriveColumnMap(item.columnValues);
+        db.prepare('UPDATE events SET monday_column_map = ? WHERE id = ?')
+          .run(JSON.stringify(columnMap), eventId);
+        columnMapStored = true;
+      }
 
       // Extract column values
       const colVals = parseColumnValues(item.columnValues);
@@ -103,10 +118,25 @@ export async function importFromMonday(
       }
 
       // Find existing equipment by monday item ID
-      const existingEquip = db
-        .prepare('SELECT id FROM equipment WHERE monday_subitem_id = ?')
-        .get(item.id) as { id: string } | undefined;
+      const existingEquip = getExistingByMonday.get(item.id) as any;
       const equipId = existingEquip?.id || uuid();
+
+      // Field-level diff tracking
+      if (existingEquip) {
+        const newFields: Record<string, string> = {
+          name: item.name,
+          quantity_needed: String(quantity),
+          quantity_confirmed: String(quantityConfirmed),
+          status: status,
+          notes: notes || '',
+        };
+        for (const [field, newVal] of Object.entries(newFields)) {
+          const oldVal = String(existingEquip[field] ?? '');
+          if (oldVal !== newVal) {
+            logMonday.run(equipId, field, oldVal, newVal);
+          }
+        }
+      }
 
       insertEquipment.run(
         equipId,
@@ -121,24 +151,44 @@ export async function importFromMonday(
       );
       equipmentImported++;
 
-      // Also import subitems as equipment under the same area
+      // Also import subitems
       for (const sub of item.subitems) {
         const subColVals = parseColumnValues(sub.columnValues);
-        const subExisting = db
-          .prepare('SELECT id FROM equipment WHERE monday_subitem_id = ?')
-          .get(sub.id) as { id: string } | undefined;
+        const subExisting = getExistingByMonday.get(sub.id) as any;
         const subId = subExisting?.id || uuid();
+
+        const subQuantity = subColVals.numbers || 0;
+        const subQuantityConfirmed = subColVals.numbersConfirmed || 0;
+        const subStatus = mapMondayStatus(subColVals.status);
+        const subNotes = subColVals.longText;
+
+        // Field-level diff for subitems
+        if (subExisting) {
+          const newFields: Record<string, string> = {
+            name: sub.name,
+            quantity_needed: String(subQuantity),
+            quantity_confirmed: String(subQuantityConfirmed),
+            status: subStatus,
+            notes: subNotes || '',
+          };
+          for (const [field, newVal] of Object.entries(newFields)) {
+            const oldVal = String(subExisting[field] ?? '');
+            if (oldVal !== newVal) {
+              logMonday.run(subId, field, oldVal, newVal);
+            }
+          }
+        }
 
         insertEquipment.run(
           subId,
           areaId,
           sub.name,
-          subColVals.numbers || 0,
-          subColVals.numbersConfirmed || 0,
-          mapMondayStatus(subColVals.status),
+          subQuantity,
+          subQuantityConfirmed,
+          subStatus,
           sub.id,
           null,
-          subColVals.longText || null
+          subNotes || null
         );
         equipmentImported++;
       }
@@ -148,6 +198,43 @@ export async function importFromMonday(
   transaction();
 
   return { areasImported, equipmentImported };
+}
+
+/**
+ * Derive a mapping of our field names to Monday column IDs.
+ * Uses the same heuristic as parseColumnValues but returns IDs instead of values.
+ */
+function deriveColumnMap(
+  columnValues: Array<{ id: string; title: string; text: string; value: string }>
+): Record<string, string> {
+  const map: Record<string, string> = {};
+
+  for (const col of columnValues) {
+    const title = col.title.toLowerCase();
+
+    if (title.includes('status') && !map['status']) {
+      map['status'] = col.id;
+    } else if (title.includes('confirm') && title.includes('quant') && !map['quantity_confirmed']) {
+      map['quantity_confirmed'] = col.id;
+    } else if (
+      (title.includes('quant') || title.includes('number') || title.includes('qty')) &&
+      !map['quantity_needed']
+    ) {
+      map['quantity_needed'] = col.id;
+    } else if (
+      (title.includes('vendor') || title.includes('supplier') || title.includes('people')) &&
+      !map['vendor']
+    ) {
+      map['vendor'] = col.id;
+    } else if (
+      (title.includes('note') || title.includes('comment') || title.includes('description')) &&
+      !map['notes']
+    ) {
+      map['notes'] = col.id;
+    }
+  }
+
+  return map;
 }
 
 interface ParsedColumns {
@@ -194,9 +281,11 @@ function parseColumnValues(
 function mapMondayStatus(status?: string): string {
   if (!status) return 'not_ordered';
   const lower = status.toLowerCase();
-  if (lower.includes('deliver') || lower.includes('done') || lower.includes('complete')) return 'delivered';
+  if (lower.includes('deliver') || lower.includes('done') || lower.includes('complete'))
+    return 'delivered';
   if (lower.includes('confirm')) return 'confirmed';
-  if (lower.includes('order') || lower.includes('working') || lower.includes('progress')) return 'ordered';
+  if (lower.includes('order') || lower.includes('working') || lower.includes('progress'))
+    return 'ordered';
   if (lower.includes('stuck') || lower.includes('block')) return 'ordered';
   return 'not_ordered';
 }

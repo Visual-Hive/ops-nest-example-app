@@ -1,7 +1,8 @@
 import type { IpcMain } from 'electron';
 import { IPC } from '../../shared/ipc-channels';
 import { getDb } from '../db';
-import type { Area, Equipment, Vendor, Escalation } from '../../shared/models';
+import { v4 as uuid } from 'uuid';
+import type { Area, Equipment, Vendor, Escalation, SyncConflict } from '../../shared/models';
 
 export function registerDataHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.DATA_GET_AREAS, async (_event, eventId?: string) => {
@@ -27,6 +28,7 @@ export function registerDataHandlers(ipcMain: IpcMain): void {
     return { vendors: rows.map(rowToVendor) };
   });
 
+  // Update equipment with local change tracking
   ipcMain.handle(
     IPC.DATA_UPDATE_EQUIPMENT,
     async (_event, id: string, updates: Record<string, unknown>) => {
@@ -57,11 +59,39 @@ export function registerDataHandlers(ipcMain: IpcMain): void {
       setClauses.push("updated_at = datetime('now')");
       values.push(id);
 
-      db.prepare(
-        `UPDATE equipment SET ${setClauses.join(', ')} WHERE id = ?`
-      ).run(...values);
+      // Wrap in transaction: read old values, update, log changes
+      const transaction = db.transaction(() => {
+        // Read current row for diff
+        const currentRow = db
+          .prepare('SELECT * FROM equipment WHERE id = ?')
+          .get(id) as any;
+        if (!currentRow) return { success: false, message: 'Equipment not found' };
 
-      return { success: true };
+        // Run the update
+        db.prepare(
+          `UPDATE equipment SET ${setClauses.join(', ')} WHERE id = ?`
+        ).run(...values);
+
+        // Log per-field changes to sync_journal
+        const logChange = db.prepare(
+          `INSERT INTO sync_journal (entity_type, entity_id, source, field_name, old_value, new_value)
+           VALUES ('equipment', ?, 'local', ?, ?, ?)`
+        );
+
+        for (const [key, value] of Object.entries(updates)) {
+          const dbKey = camelToSnake(key);
+          if (!allowed.includes(dbKey)) continue;
+          const oldVal = String(currentRow[dbKey] ?? '');
+          const newVal = String(value ?? '');
+          if (oldVal !== newVal) {
+            logChange.run(id, dbKey, oldVal, newVal);
+          }
+        }
+
+        return { success: true };
+      });
+
+      return transaction();
     }
   );
 
@@ -80,11 +110,128 @@ export function registerDataHandlers(ipcMain: IpcMain): void {
       db.prepare(
         "UPDATE escalations SET status = 'resolved', resolved_at = datetime('now') WHERE id = ?"
       ).run(id);
-      // Log the resolution
       db.prepare(
         "INSERT INTO sync_journal (entity_type, entity_id, source, field_name, old_value, new_value) VALUES ('escalation', ?, 'local', 'status', 'open', ?)"
       ).run(id, resolution);
       return { success: true };
+    }
+  );
+
+  // Get sync conflicts (escalations of type sync_conflict with competing journal entries)
+  ipcMain.handle(IPC.DATA_GET_CONFLICTS, async () => {
+    const db = getDb();
+
+    // Find open sync_conflict escalations
+    const escalations = db
+      .prepare(
+        "SELECT * FROM escalations WHERE type = 'sync_conflict' AND status != 'resolved' ORDER BY created_at DESC"
+      )
+      .all() as any[];
+
+    const conflicts: SyncConflict[] = [];
+
+    for (const esc of escalations) {
+      // Find the competing journal entries (marked as pending for this escalation)
+      const entries = db
+        .prepare(
+          `SELECT * FROM sync_journal
+           WHERE conflict_resolved LIKE ?
+           ORDER BY synced_at DESC`
+        )
+        .all(`pending:escalation:${esc.id}%`) as any[];
+
+      if (entries.length < 2) continue;
+
+      // Get equipment name for display
+      let equipmentName: string | undefined;
+      if (esc.entity_type === 'equipment') {
+        const equip = db
+          .prepare('SELECT name FROM equipment WHERE id = ?')
+          .get(esc.entity_id) as any;
+        equipmentName = equip?.name;
+      }
+
+      // Group by unique source, take the most recent entry per source
+      const bySource = new Map<string, any>();
+      for (const entry of entries) {
+        if (!bySource.has(entry.source)) {
+          bySource.set(entry.source, entry);
+        }
+      }
+      const sources = [...bySource.values()];
+      if (sources.length < 2) continue;
+
+      conflicts.push({
+        id: esc.id,
+        entityType: esc.entity_type,
+        entityId: esc.entity_id,
+        fieldName: entries[0].field_name,
+        equipmentName,
+        sourceA: {
+          source: sources[0].source,
+          value: sources[0].new_value,
+          timestamp: sources[0].synced_at,
+        },
+        sourceB: {
+          source: sources[1].source,
+          value: sources[1].new_value,
+          timestamp: sources[1].synced_at,
+        },
+      });
+    }
+
+    return { conflicts };
+  });
+
+  // Resolve a specific conflict by choosing a source
+  ipcMain.handle(
+    IPC.DATA_RESOLVE_CONFLICT,
+    async (_event, escalationId: string, chosenSource: string) => {
+      const db = getDb();
+
+      const transaction = db.transaction(() => {
+        // Find the escalation
+        const esc = db
+          .prepare('SELECT * FROM escalations WHERE id = ?')
+          .get(escalationId) as any;
+        if (!esc) return { success: false, message: 'Escalation not found' };
+
+        // Find the competing entries
+        const entries = db
+          .prepare(
+            `SELECT * FROM sync_journal WHERE conflict_resolved LIKE ?`
+          )
+          .all(`pending:escalation:${escalationId}%`) as any[];
+
+        // Find the chosen entry
+        const chosen = entries.find((e: any) => e.source === chosenSource);
+        if (!chosen) return { success: false, message: 'Source not found in conflict' };
+
+        // Apply the chosen value to the equipment row
+        if (esc.entity_type === 'equipment') {
+          const dbField = chosen.field_name;
+          db.prepare(
+            `UPDATE equipment SET ${dbField} = ?, updated_at = datetime('now') WHERE id = ?`
+          ).run(chosen.new_value, esc.entity_id);
+        }
+
+        // Mark all entries as resolved
+        db.prepare(
+          `UPDATE sync_journal SET conflict_resolved = ? WHERE conflict_resolved LIKE ?`
+        ).run(
+          `manual:${chosenSource}`,
+          `pending:escalation:${escalationId}%`
+        );
+
+        // Resolve the escalation
+        db.prepare(
+          "UPDATE escalations SET status = 'resolved', resolved_at = datetime('now') WHERE id = ?"
+        ).run(escalationId);
+
+        return { success: true };
+      });
+
+      return transaction();
     }
   );
 }

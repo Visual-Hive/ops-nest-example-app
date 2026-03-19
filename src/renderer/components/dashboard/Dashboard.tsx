@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { AreaGrid } from './AreaGrid';
+import { ConflictPanel } from './ConflictPanel';
 import type { Area, AppEvent, Escalation } from '../../../shared/models';
 
 interface DashboardProps {
@@ -197,8 +198,9 @@ export function Dashboard({ onNewEvent }: DashboardProps) {
             </div>
           </div>
 
-          {/* Escalations */}
+          {/* Conflicts & Escalations */}
           <div style={styles.rightSection}>
+            <ConflictPanel onResolved={loadData} />
             <div style={styles.panelHeader}>
               <h2 style={styles.panelTitle}>Escalations & Alerts</h2>
               <span

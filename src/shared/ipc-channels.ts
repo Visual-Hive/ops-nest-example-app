@@ -25,6 +25,8 @@ export const IPC = {
   DATA_UPDATE_EQUIPMENT: 'data:update-equipment',
   DATA_GET_ESCALATIONS: 'data:get-escalations',
   DATA_RESOLVE_ESCALATION: 'data:resolve-escalation',
+  DATA_GET_CONFLICTS: 'data:get-conflicts',
+  DATA_RESOLVE_CONFLICT: 'data:resolve-conflict',
 
   // Email
   EMAIL_GET_INBOX: 'email:get-inbox',

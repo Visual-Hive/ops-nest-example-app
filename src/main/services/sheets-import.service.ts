@@ -7,6 +7,7 @@ import type { ColumnMapping } from '../../shared/models';
 /**
  * Import data from a Google Sheet into the local SQLite database.
  * Uses column mapping to interpret sheet structure.
+ * Tracks field-level diffs in sync_journal for conflict detection.
  */
 export async function importFromSheets(
   eventId: string,
@@ -41,7 +42,7 @@ export async function importFromSheets(
 
   const insertEquipment = db.prepare(
     `INSERT INTO equipment (id, area_id, name, quantity_needed, quantity_confirmed, status, sheets_cell_ref, vendor_id, notes, last_synced_at)
-     VALUES (?, ?, ?, ?, 0, 'not_ordered', ?, ?, ?, datetime('now'))
+     VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, datetime('now'))
      ON CONFLICT(id) DO UPDATE SET
        name = excluded.name,
        quantity_needed = excluded.quantity_needed,
@@ -57,16 +58,18 @@ export async function importFromSheets(
      ON CONFLICT(id) DO NOTHING`
   );
 
-  const upsertSnapshot = db.prepare(
+  const logSheets = db.prepare(
     `INSERT INTO sync_journal (entity_type, entity_id, source, field_name, old_value, new_value)
-     VALUES (?, ?, 'sheets', 'import', NULL, ?)`
+     VALUES ('equipment', ?, 'sheets', ?, ?, ?)`
   );
+
+  const getExisting = db.prepare('SELECT * FROM equipment WHERE id = ?');
 
   // Process data rows (skip header)
   const transaction = db.transaction(() => {
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
-      if (!row || row.every((cell) => !cell?.trim())) continue; // skip empty rows
+      if (!row || row.every((cell) => !cell?.trim())) continue;
 
       const areaName = row[colIndex.areaName]?.trim();
       const equipName = row[colIndex.equipmentName]?.trim();
@@ -79,7 +82,6 @@ export async function importFromSheets(
         if (areaMap.has(areaName)) {
           areaId = areaMap.get(areaName)!;
         } else {
-          // Check if area already exists for this event
           const existing = db
             .prepare('SELECT id FROM areas WHERE event_id = ? AND name = ?')
             .get(eventId, areaName) as { id: string } | undefined;
@@ -89,7 +91,6 @@ export async function importFromSheets(
           if (!existing) areasImported++;
         }
       } else {
-        // No area name on this row - use the last known area
         const lastArea = [...areaMap.values()].pop();
         if (!lastArea) continue;
         areaId = lastArea;
@@ -115,22 +116,37 @@ export async function importFromSheets(
           }
         }
 
-        // Generate deterministic ID based on event+area+equipment for idempotent imports
         const equipId = deterministicId(eventId, areaId, equipName);
+
+        // Field-level diff tracking: check existing row before upsert
+        const existing = getExisting.get(equipId) as any;
+        if (existing) {
+          const newFields: Record<string, string> = {
+            name: equipName,
+            quantity_needed: String(quantity),
+            status: status,
+            notes: notes || '',
+          };
+
+          for (const [field, newVal] of Object.entries(newFields)) {
+            const oldVal = String(existing[field] ?? '');
+            if (oldVal !== newVal) {
+              logSheets.run(equipId, field, oldVal, newVal);
+            }
+          }
+        }
 
         insertEquipment.run(
           equipId,
           areaId,
           equipName,
           quantity,
+          status,
           cellRef,
           vendorId,
           notes || null
         );
         equipmentImported++;
-
-        // Log the import
-        upsertSnapshot.run('equipment', equipId, JSON.stringify({ name: equipName, quantity, status }));
       }
     }
   });
@@ -152,7 +168,10 @@ export async function getSheetHeaders(
   return rows[0] || [];
 }
 
-function resolveColumnIndices(
+/**
+ * Resolve column name→index mapping. Exported for reuse in push logic.
+ */
+export function resolveColumnIndices(
   headers: string[],
   mapping: ColumnMapping
 ): Record<keyof ColumnMapping, number> {
@@ -183,7 +202,11 @@ function mapSheetStatus(status?: string): string {
   return 'not_ordered';
 }
 
-function columnLetter(index: number): string {
+/**
+ * Convert a 0-based column index to a column letter (A, B, ..., Z, AA, AB, ...).
+ * Exported for reuse in push logic.
+ */
+export function columnLetter(index: number): string {
   let result = '';
   let n = index;
   while (n >= 0) {
@@ -198,6 +221,5 @@ function deterministicId(eventId: string, areaId: string, equipName: string): st
     .createHash('sha256')
     .update(`${eventId}:${areaId}:${equipName}`)
     .digest('hex');
-  // Format as UUID-like string for consistency
   return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
 }

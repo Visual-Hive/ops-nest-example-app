@@ -85,7 +85,8 @@ export const CREATE_TABLES_SQL = `
     old_value TEXT,
     new_value TEXT,
     synced_at TEXT NOT NULL DEFAULT (datetime('now')),
-    conflict_resolved TEXT
+    conflict_resolved TEXT,
+    pushed_at TEXT
   );
 
   CREATE TABLE IF NOT EXISTS escalations (
@@ -100,9 +101,19 @@ export const CREATE_TABLES_SQL = `
     resolved_at TEXT
   );
 
+  CREATE INDEX IF NOT EXISTS idx_sync_journal_source_pushed ON sync_journal(source, pushed_at);
   CREATE INDEX IF NOT EXISTS idx_areas_event ON areas(event_id);
   CREATE INDEX IF NOT EXISTS idx_equipment_area ON equipment(area_id);
   CREATE INDEX IF NOT EXISTS idx_emails_vendor ON emails(vendor_id);
   CREATE INDEX IF NOT EXISTS idx_sync_journal_entity ON sync_journal(entity_type, entity_id);
   CREATE INDEX IF NOT EXISTS idx_escalations_status ON escalations(status);
 `;
+
+/**
+ * Idempotent migrations for columns added after initial schema.
+ * ALTER TABLE ... ADD COLUMN throws if column exists; we catch and ignore.
+ */
+export const MIGRATIONS = [
+  'ALTER TABLE sync_journal ADD COLUMN pushed_at TEXT',
+  'ALTER TABLE events ADD COLUMN monday_column_map TEXT',
+];
