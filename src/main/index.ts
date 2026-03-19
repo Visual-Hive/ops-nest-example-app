@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import path from 'path';
 import { startServer, stopServer } from './server';
 import { registerAuthHandlers } from './ipc/auth.ipc';
@@ -9,6 +9,14 @@ import { registerDataHandlers } from './ipc/data.ipc';
 import { registerEventsHandlers } from './ipc/events.ipc';
 import { initDatabase } from './db';
 import { initStore } from './store';
+
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled Rejection:', reason);
+});
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -42,28 +50,35 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
-  // Initialize storage and database
-  await initStore();
-  initDatabase();
+  try {
+    // Initialize storage and database
+    await initStore();
+    initDatabase();
 
-  // Start the internal Express server (for OAuth callbacks)
-  await startServer();
+    // Start the internal Express server (for OAuth callbacks)
+    await startServer();
 
-  // Register IPC handlers
-  registerAuthHandlers(ipcMain);
-  registerSyncHandlers(ipcMain);
-  registerEmailHandlers(ipcMain);
-  registerAiHandlers(ipcMain);
-  registerDataHandlers(ipcMain);
-  registerEventsHandlers(ipcMain);
+    // Register IPC handlers
+    registerAuthHandlers(ipcMain);
+    registerSyncHandlers(ipcMain);
+    registerEmailHandlers(ipcMain);
+    registerAiHandlers(ipcMain);
+    registerDataHandlers(ipcMain);
+    registerEventsHandlers(ipcMain);
 
-  createWindow();
+    createWindow();
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
-  });
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+      }
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.stack || error.message : String(error);
+    console.error('Startup failed:', message);
+    dialog.showErrorBox('Startup Error', `Failed to initialize:\n\n${message}`);
+    app.quit();
+  }
 });
 
 app.on('window-all-closed', async () => {
